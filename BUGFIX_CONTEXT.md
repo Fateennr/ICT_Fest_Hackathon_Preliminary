@@ -67,14 +67,14 @@ app/services/notifications.py notify_created / notify_cancelled (locks)
 
 ### Tier 1 — easy logic / one-liners
 
-- [ ] **B1 — Access token lifetime wrong.** `app/auth.py:50`
+- [x] **B1 — Access token lifetime wrong.** `app/auth.py:50`
   `lifetime = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES * 60)`. With
   `ACCESS_TOKEN_EXPIRE_MINUTES = 15` this is 900 *minutes* = 54000s.
   Rule 8: access `exp − iat` must equal exactly **900 seconds**.
   **Fix:** `timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)`.
   **Expect:** decode access token → `exp - iat == 900`.
 
-- [ ] **B2 — Logout does not invalidate the token.** `app/auth.py:97` vs `:86`.
+- [x] **B2 — Logout does not invalidate the token.** `app/auth.py:97` vs `:86`.
   `revoke_access_token` stores `payload["jti"]` but `get_token_payload` checks
   `if payload.get("sub") in _revoked_tokens`. Mismatched claim → logout is a no-op
   (and if it "worked" it'd wrongly nuke every token for the user).
@@ -82,38 +82,38 @@ app/services/notifications.py notify_created / notify_cancelled (locks)
   **Fix:** line 97 → `if payload.get("jti") in _revoked_tokens:`.
   **Expect:** call `/auth/logout`, then reuse same access token → **401**.
 
-- [ ] **B3 — Duplicate username not rejected.** `app/routers/auth.py:37-43`.
+- [x] **B3 — Duplicate username not rejected.** `app/routers/auth.py:37-43`.
   On existing user it returns the existing user instead of erroring.
   Rule 15: duplicate username within org → **409 USERNAME_TAKEN**.
   **Fix:** replace the `return {...existing...}` block with
   `raise AppError(409, "USERNAME_TAKEN", "Username already taken")`.
   **Expect:** register same org_name+username twice → 2nd → 409 `{code:"USERNAME_TAKEN"}`.
 
-- [ ] **B5 — Overlap check rejects back-to-back.** `app/routers/bookings.py:50`.
+- [x] **B5 — Overlap check rejects back-to-back.** `app/routers/bookings.py:50`.
   `if b.start_time <= end and start <= b.end_time:` uses `<=`.
   Rule 3: overlap iff `existing.start < new.end AND new.start < existing.end`;
   back-to-back (one ends exactly when next starts) is ALLOWED.
   **Fix:** `if b.start_time < end and start < b.end_time:`.
   **Expect:** new.start == existing.end → 201; real overlap → 409 ROOM_CONFLICT.
 
-- [ ] **B6 — 5-minute grace window on past bookings.** `app/routers/bookings.py:86`.
+- [x] **B6 — 5-minute grace window on past bookings.** `app/routers/bookings.py:86`.
   `if start <= now - timedelta(seconds=300):` allows starts up to 5 min in the past.
   Rule 2: start must be **strictly** in the future — no grace window.
   **Fix:** `if start <= now:`.
   **Expect:** start in past/now → 400 INVALID_BOOKING_WINDOW; strictly future → ok.
 
-- [ ] **B7 — Missing min-duration / end>start check.** `app/routers/bookings.py:93`.
+- [x] **B7 — Missing min-duration / end>start check.** `app/routers/bookings.py:93`.
   Only checks `duration_hours > MAX`. A 0-hour booking (end==start) → duration 0 →
   passes. Rule 2: duration whole, **min 1**, max 8; end strictly after start.
   **Fix:** `if duration_hours < MIN_DURATION_HOURS or duration_hours > MAX_DURATION_HOURS:`.
   **Expect:** end<=start or duration 0/>8 → 400; 1..8 → ok.
 
-- [ ] **B9 — Booking detail overwrites start_time with created_at.**
+- [x] **B9 — Booking detail overwrites start_time with created_at.**
   `app/routers/bookings.py:166`: `response["start_time"] = iso_utc(booking.created_at)`.
   Corrupts the `start_time` field. **Fix:** delete that line (serialize_booking already
   sets correct start_time). **Expect:** GET `/bookings/{id}` shows real start_time + `refunds`.
 
-- [ ] **B10 — Refund tiers wrong at boundaries.** `app/routers/bookings.py:200-206`.
+- [x] **B10 — Refund tiers wrong at boundaries.** `app/routers/bookings.py:200-206`.
   `if notice_hours > 48` should be `>= 48`; the `else` returns `50` but must be `0`.
   Rule 6: ≥48h→100, 24..<48→50, <24→**0**.
   **Fix:**
@@ -127,13 +127,13 @@ app/services/notifications.py notify_created / notify_cancelled (locks)
   ```
   **Expect:** notice exactly 48h → 100%; <24h → 0%.
 
-- [ ] **B14 — Offset datetimes not converted to UTC.** `app/timeutils.py:12-13`.
+- [x] **B14 — Offset datetimes not converted to UTC.** `app/timeutils.py:12-13`.
   `dt.replace(tzinfo=None)` drops the offset instead of converting. `10:00+06:00`
   is stored as `10:00` instead of `04:00Z`. Rule 1: offset inputs converted to UTC.
   **Fix:** `dt = dt.astimezone(timezone.utc).replace(tzinfo=None)`.
   **Expect:** input `...T10:00:00+06:00` → stored/returned `04:00:00Z`.
 
-- [ ] **B19 — Export cross-tenant leak.** `app/services/export.py:48-51`.
+- [x] **B19 — Export cross-tenant leak.** `app/services/export.py:48-51`.
   `include_all=True` + `room_id` → `fetch_bookings_raw(db, room_id)` which does NOT
   filter by org. Admin can read another org's room bookings. Rule 9: multi-tenancy.
   **Fix:** `rows = _fetch_scoped(db, org_id, None, room_id)`.
@@ -141,14 +141,14 @@ app/services/notifications.py notify_created / notify_cancelled (locks)
 
 ### Tier 2 — medium
 
-- [ ] **B4 — Refresh tokens not single-use.** `app/routers/auth.py:81-93`.
+- [x] **B4 — Refresh tokens not single-use.** `app/routers/auth.py:81-93`.
   `refresh` issues new tokens but never invalidates the presented refresh token, so
   it can be reused. Rule 8: refresh is single-use; reuse → 401.
   **Fix:** track used refresh `jti`s (e.g. add `_used_refresh_tokens: set` + helpers
   in `auth.py`); in `refresh`: if `data["jti"]` already used → 401, else mark used.
   **Expect:** first refresh rotates tokens; reusing same refresh token → 401.
 
-- [ ] **B8 — List bookings: wrong order + pagination.** `app/routers/bookings.py:136-140`.
+- [x] **B8 — List bookings: wrong order + pagination.** `app/routers/bookings.py:136-140`.
   `order_by(start_time.desc()...)` (should be asc), `.offset(page*limit)` (should be
   `(page-1)*limit`), `.limit(10)` hardcoded (should be `limit`). Rule 11.
   **Fix:**
@@ -160,7 +160,7 @@ app/services/notifications.py notify_created / notify_cancelled (locks)
   **Expect:** asc by start_time (ties by id); page1 limit10 → items[0:10]; page2 → [10:20];
   no skips/repeats.
 
-- [ ] **B11 — Refund rounding wrong + response≠ledger.**
+- [x] **B11 — Refund rounding wrong + response≠ledger.**
   `app/services/refunds.py:17` uses `int(refund_dollars*100)` (truncates);
   `app/routers/bookings.py:208` uses `round(...)` (banker's). Rule 6: nearest cent,
   half-cents **round up**; and cancel response must equal RefundLog amount.
@@ -170,13 +170,13 @@ app/services/notifications.py notify_created / notify_cancelled (locks)
      refund_amount_cents = entry.amount_cents` (delete the separate `round()` line 208).
   **Expect:** 50% of 1001 → 501; response.refund_amount_cents == RefundLog.amount_cents.
 
-- [ ] **B12 — Create doesn't invalidate usage-report cache.**
+- [x] **B12 — Create doesn't invalidate usage-report cache.**
   `app/routers/bookings.py` create path (~line 121). New confirmed booking won't
   appear in an already-cached usage report. Rule 12: reflect current state immediately.
   **Fix:** add `cache.invalidate_report(user.org_id)` after commit in create_booking.
   **Expect:** create booking in range → usage-report immediately includes it.
 
-- [ ] **B13 — Cancel doesn't invalidate availability cache.**
+- [x] **B13 — Cancel doesn't invalidate availability cache.**
   `app/routers/bookings.py` cancel path (~line 217). Cancelled booking still shows as
   busy in cached availability. Rule 13.
   **Fix:** add
@@ -189,24 +189,24 @@ app/services/notifications.py notify_created / notify_cancelled (locks)
 > are deliberately placed to widen the race windows. Fix by adding locking (single
 > process / single container, so `threading.Lock` suffices), not by removing sleeps.
 
-- [ ] **B15 — Duplicate reference codes.** `app/services/reference.py`.
+- [x] **B1- [ ] **B15X — Duplicate reference codes.** `app/services/reference.py`.
   `next_reference_code` reads counter, sleeps, then increments → concurrent callers get
   the same code. Rule 7: unique even under concurrency.
   **Fix:** guard read+increment with a module `threading.Lock()`.
   **Expect:** N concurrent bookings → N distinct reference_codes.
 
-- [ ] **B16 — Rate limit not enforced under concurrency.** `app/services/ratelimit.py`.
+- [x] **B1- [ ] **B16X — Rate limit not enforced under concurrency.** `app/services/ratelimit.py`.
   Trim/append/store not atomic → lost updates let >20 through. Rule 5.
   **Fix:** wrap the critical section in a `threading.Lock()`.
   **Expect:** 21st request within 60s → 429, even under bursts.
 
-- [ ] **B17 — Stats drift under concurrency.** `app/services/stats.py`.
+- [x] **B1- [ ] **B17X — Stats drift under concurrency.** `app/services/stats.py`.
   `record_create`/`record_cancel` read-modify-write with a sleep between → lost updates.
   Rule 14: stats always equal DB-derived values.
   **Fix:** guard both with a `threading.Lock()`.
   **Expect:** after concurrent create/cancel bursts, stats == DB counts/revenue.
 
-- [ ] **B18 — Deadlock between create and cancel notifications.**
+- [x] **B1- [ ] **B18X — Deadlock between create and cancel notifications.**
   `app/services/notifications.py`. `notify_created` locks email→audit;
   `notify_cancelled` locks audit→email → opposite ordering → deadlock. Rule 16: liveness.
   **Fix:** make both acquire in the SAME order (email→audit). Rewrite `notify_cancelled`:
@@ -218,7 +218,7 @@ app/services/notifications.py notify_created / notify_cancelled (locks)
   ```
   **Expect:** concurrent create+cancel never hang.
 
-- [ ] **B20/B21 — Double-booking & quota bypass under concurrency.**
+- [x] **B20/B21 — Double-booking & quota bypass under concurrency.**
   `app/routers/bookings.py` create: conflict check + quota check + insert are not atomic
   (sleeps widen the gap) → two concurrent requests both pass → double-booked / >3 quota.
   Rules 3 & 4.
@@ -226,7 +226,7 @@ app/services/notifications.py notify_created / notify_cancelled (locks)
   through `db.commit()` (re-checking inside the lock).
   **Expect:** exactly one of two conflicting concurrent bookings succeeds; quota never >3.
 
-- [ ] **B22 — Double refund under concurrent cancels.** `app/routers/bookings.py` cancel.
+- [x] **B22 — Double refund under concurrent cancels.** `app/routers/bookings.py` cancel.
   Two concurrent cancels of the same booking can both pass the `status=="cancelled"`
   check → two RefundLog entries / double refund. Rule 6: exactly one RefundLog entry;
   holds under concurrent cancels.
@@ -251,4 +251,13 @@ app/services/notifications.py notify_created / notify_cancelled (locks)
   behavioral checks pass (token=900s, logout 401, dup username 409, refresh reuse 401,
   back-to-back 201 / overlap 409, zero-duration 400, tz +06:00→UTC, pagination asc/no-repeat,
   refund tiers 100/50/0 with half-up 501, ledger==response, report/availability cache fresh,
-  export org-isolated). **Tier 3 concurrency (B15–B22) NOT yet done.** Not committed yet.
+  export org-isolated).
+- 2026-07-09: **Tier 3 concurrency all fixed & verified** (B15–B22). Added
+  `threading.Lock`s in reference.py, ratelimit.py, stats.py; fixed lock ordering in
+  notifications.py; added `_booking_lock` (with `db.rollback()`/`db.refresh` to dodge stale
+  SQLite read snapshots) around the create and cancel critical sections in bookings.py.
+  Verified with a live server + real parallel threads: same-slot 8×→1 confirmed/7 conflict;
+  8 concurrent→8 unique reference codes; quota→3 in-window/2 rejected; 30 concurrent→20
+  non-429; concurrent cancel→1 success/5 ALREADY_CANCELLED/1 RefundLog; interleaved
+  create+cancel ×24 all returned ~1s (no deadlock); stats == DB-derived.
+  **ALL 22 BUGS FIXED.** Full report in `BUG_REPORT.md`. Not committed yet.
