@@ -1,15 +1,15 @@
 """Authentication endpoints: register, login, refresh, logout."""
 from fastapi import APIRouter, Depends
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..auth import (
+    consume_refresh_token,
     create_access_token,
     create_refresh_token,
     decode_token,
     get_token_payload,
     hash_password,
-    is_refresh_token_used,
-    mark_refresh_token_used,
     revoke_access_token,
     verify_password,
 )
@@ -24,12 +24,21 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 @router.post("/register", status_code=201)
 def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     org = db.query(Organization).filter(Organization.name == payload.org_name).first()
-    role = "admin" if org is None else "member"
     if org is None:
         org = Organization(name=payload.org_name)
         db.add(org)
-        db.commit()
-        db.refresh(org)
+        try:
+            db.commit()
+            db.refresh(org)
+            role = "admin"
+        except IntegrityError:
+            # Another request created this org concurrently; the unique name
+            # constraint fired. Join the existing org as a member instead of 500ing.
+            db.rollback()
+            org = db.query(Organization).filter(Organization.name == payload.org_name).first()
+            role = "member"
+    else:
+        role = "member"
 
     existing = (
         db.query(User)
@@ -46,8 +55,14 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         role=role,
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    try:
+        db.commit()
+        db.refresh(user)
+    except IntegrityError:
+        # Concurrent registration of the same username within the org raced past
+        # the existence check; surface the contract error instead of a 500.
+        db.rollback()
+        raise AppError(409, "USERNAME_TAKEN", "Username already taken")
     return {
         "user_id": user.id,
         "org_id": org.id,
@@ -80,12 +95,13 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
     data = decode_token(payload.refresh_token)
     if data.get("type") != "refresh":
         raise AppError(401, "UNAUTHORIZED", "Wrong token type")
-    if is_refresh_token_used(data):
+    # Atomically claim the token so concurrent reuse of the same refresh token
+    # can never both rotate; the first caller wins, the rest get 401.
+    if not consume_refresh_token(data):
         raise AppError(401, "UNAUTHORIZED", "Refresh token already used")
     user = db.query(User).filter(User.id == int(data["sub"])).first()
     if user is None:
         raise AppError(401, "UNAUTHORIZED", "Unknown user")
-    mark_refresh_token_used(data)
     return {
         "access_token": create_access_token(user),
         "refresh_token": create_refresh_token(user),

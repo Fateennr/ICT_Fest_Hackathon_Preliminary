@@ -4,7 +4,7 @@ Prints PASS/FAIL per check. Run against a live server on 127.0.0.1:8012.
 import httpx, jwt
 from datetime import datetime, timedelta, timezone
 
-B = "http://127.0.0.1:8012"
+B = "http://127.0.0.1:8016"
 SECRET = "test-secret"
 fails = []
 def check(name, cond, extra=""):
@@ -102,12 +102,22 @@ check("end==start -> 400", httpx.post(f"{B}/bookings", json={"room_id":rid,"star
 check("9h duration -> 400", httpx.post(f"{B}/bookings", json={"room_id":rid,"start_time":fut(70),"end_time":fut(79)}, headers=H(admTok)).status_code==400)
 check("1.5h duration -> 400", httpx.post(f"{B}/bookings", json={"room_id":rid,"start_time":fut(70)[:-6]+"+00:00","end_time":(datetime.now(timezone.utc)+timedelta(hours=71,minutes=30)).replace(second=0,microsecond=0).isoformat()}, headers=H(admTok)).status_code==400)
 
-# ---------- CANCEL REFUND (Rule 6) exactly-24h boundary ----------
-# start exactly 24h from now -> should be 50%
-b24 = httpx.post(f"{B}/bookings", json={"room_id":rid,"start_time":fut(24),"end_time":fut(25)}, headers=H(admTok))
-if b24.status_code==201:
-    c24 = httpx.post(f"{B}/bookings/{b24.json()['id']}/cancel", headers=H(admTok)).json()
-    check("cancel exactly ~24h notice -> 50%", c24.get("refund_percent")==50, c24)
+# ---------- CANCEL REFUND (Rule 6) tiers ----------
+# notice in [24h,48h) -> 50%  (use 30h so hour-rounding keeps it comfortably in-tier)
+b50 = httpx.post(f"{B}/bookings", json={"room_id":rid,"start_time":fut(30),"end_time":fut(31)}, headers=H(admTok))
+if b50.status_code==201:
+    c50 = httpx.post(f"{B}/bookings/{b50.json()['id']}/cancel", headers=H(admTok)).json()
+    check("cancel 24-48h notice -> 50%", c50.get("refund_percent")==50, c50)
+# notice >=48h -> 100%
+b100 = httpx.post(f"{B}/bookings", json={"room_id":rid,"start_time":fut(60),"end_time":fut(61)}, headers=H(admTok))
+if b100.status_code==201:
+    c100 = httpx.post(f"{B}/bookings/{b100.json()['id']}/cancel", headers=H(admTok)).json()
+    check("cancel >=48h notice -> 100%", c100.get("refund_percent")==100, c100)
+# notice <24h -> 0%
+b0 = httpx.post(f"{B}/bookings", json={"room_id":rid,"start_time":fut(5),"end_time":fut(6)}, headers=H(admTok))
+if b0.status_code==201:
+    c0 = httpx.post(f"{B}/bookings/{b0.json()['id']}/cancel", headers=H(admTok)).json()
+    check("cancel <24h notice -> 0%", c0.get("refund_percent")==0, c0)
 
 # ---------- 404 for unknown ids ----------
 check("GET unknown booking -> 404 BOOKING_NOT_FOUND", httpx.get(f"{B}/bookings/999999", headers=H(admTok)).status_code==404)
