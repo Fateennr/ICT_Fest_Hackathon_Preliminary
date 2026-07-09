@@ -77,15 +77,17 @@ resolutions.
   B13       Stale            Availability     Invalidate availability
             availability     cache not        cache after cancellation.
             after            refreshed after  
-            cancellation     cancellation.    
+            cancellation     cancellation.     
 
-  B14       Timezone offsets Timezone removed Convert to UTC before
-            ignored          before UTC       stripping timezone
-                             conversion.      information.
+  B14       Room conflict    Overlap logic    Use strict overlap
+            fix             treated adjacent comparison so adjacent
+                            bookings as      bookings are allowed.
+                            conflicts.        
 
-  B15       Cross-tenant     Export ignored   Restrict export queries by
-            booking export   organization     organization ID.
-                             filtering.       
+  B15       Swagger auth     Security scheme  Include `HTTPBearer` in
+            not shown        not wired into  `get_token_payload`; Swagger
+                            dependencies     now shows bearer auth input.
+                            chain.
   ------------------------------------------------------------------------
 
 ## Summary
