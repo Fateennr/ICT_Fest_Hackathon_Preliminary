@@ -19,6 +19,11 @@ from .database import get_db
 from .errors import AppError
 from .models import User
 
+from fastapi import Depends
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+bearer_scheme = HTTPBearer(auto_error=True)
+
 # Access tokens presented to /auth/logout are recorded here so they can no
 # longer be used.
 _revoked_tokens: set[str] = set()
@@ -98,11 +103,11 @@ def mark_refresh_token_used(payload: dict) -> None:
     _used_refresh_tokens.add(payload["jti"])
 
 
-def get_token_payload(request: Request) -> dict:
-    header = request.headers.get("Authorization")
-    if not header or not header.startswith("Bearer "):
-        raise AppError(401, "UNAUTHORIZED", "Missing bearer token")
-    token = header[len("Bearer "):].strip()
+def get_token_payload(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> dict:
+    token = credentials.credentials
     payload = decode_token(token)
     if payload.get("type") != "access":
         raise AppError(401, "UNAUTHORIZED", "Wrong token type")
