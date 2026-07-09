@@ -1,5 +1,6 @@
 """Room management, availability and live statistics."""
 from datetime import datetime, time, timedelta
+from sqlite3 import IntegrityError
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -45,6 +46,14 @@ def create_room(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
+    existing_room = (
+        db.query(Room.id)
+        .filter(Room.org_id == admin.org_id, Room.name == payload.name)
+        .first()
+    )
+    if existing_room is not None:
+        raise AppError(409, "ROOM_CONFLICT", "Room already exists in this organization")
+
     room = Room(
         org_id=admin.org_id,
         name=payload.name,
@@ -52,13 +61,18 @@ def create_room(
         hourly_rate_cents=payload.hourly_rate_cents,
     )
     db.add(room)
-    db.commit()
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise AppError(409, "ROOM_CONFLICT", "Room already exists in this organization")
+
     db.refresh(room)
     # A new room (with zero bookings) must appear in the usage report immediately,
     # so drop any cached report for this org.
     cache.invalidate_report(admin.org_id)
     return _serialize_room(room)
-
 
 @router.get("/{room_id}/availability")
 def availability(
