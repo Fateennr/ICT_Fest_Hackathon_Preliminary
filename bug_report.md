@@ -1,7 +1,5 @@
 # Bug Report
 
-## Overview
-
 This document summarizes the identified bugs, their causes, and their
 resolutions.
 
@@ -9,7 +7,7 @@ resolutions.
   ID        Issue            Cause            Resolution
   --------- ---------------- ---------------- ----------------------------
   B1        Access token     Token expiration Removed the extra `*60`;
-            lifetime         multiplied       token lifetime is now 900
+            lifsetime         multiplied       token lifetime is now 900
             incorrect        minutes by 60    seconds (15 minutes).
                              twice, producing 
                              15-hour tokens.  
@@ -90,9 +88,38 @@ resolutions.
                             chain.
   ------------------------------------------------------------------------
 
-## Summary
+## Concurrency Related Bugs
 
-A total of **15 bugs** were identified and fixed. The fixes improved:
+The primary cause of these issues was **unsynchronized read-modify-write operations**. The `time.sleep()` pause helpers intentionally widen the race windows for testing and were intentionally kept in place. Since the application runs in a single process/container, a `threading.Lock()` is sufficient to ensure thread safety.
+
+| ID | Issue | Cause | Resolution |
+|----|-------|-------|------------|
+| **B16** | Rate limit not enforced under concurrency | The rate limiter performed **trim → sleep → append → store** non-atomically, allowing concurrent requests to read stale buckets and under-count the request limit. | Wrapped the trim, append, and count operations inside a `threading.Lock()`. The artificial sleep was moved outside the critical section. |
+| **B17** | Stats drift under concurrency | `record_create` and `record_cancel` performed read-modify-write operations with an artificial delay, causing concurrent updates to overwrite each other and resulting in incorrect statistics. | Protected both read-modify-write sequences with a `threading.Lock()` to ensure atomic updates. |
+| **B18** | Deadlock between create and cancel notifications | `notify_created` acquired locks in the order **email → audit**, while `notify_cancelled` acquired them in the reverse order **audit → email**, creating a deadlock under concurrent execution. | Standardized lock acquisition order so both functions acquire **email → audit**, eliminating the deadlock. |
+| **B19** | Duplicate reference codes | The shared reference counter was read, delayed, and incremented without synchronization, allowing concurrent threads to generate identical reference codes. | Guarded the read-and-increment operation with a module-level `threading.Lock()` and moved the formatting delay outside the lock. |
+| **B20** | Double-booking under concurrency | Booking conflict detection and insertion were performed separately without synchronization, allowing concurrent requests to pass the conflict check simultaneously. | Protected the entire **check → commit** sequence using a module-level `_booking_lock`, with `db.rollback()` before validation to ensure the latest committed state is read. |
+| **B21** | Booking quota bypass under concurrency | The quota validation and booking insertion were not atomic, allowing concurrent requests to bypass booking limits. | Used the same `_booking_lock` around the quota check and insertion process, together with `db.rollback()` to validate against the latest committed database state. |
+| **B22** | Double refund on concurrent cancellations | The cancellation status check, refund logging, and booking status update were executed independently, allowing simultaneous cancellation requests to issue multiple refunds. | Wrapped the cancellation logic inside `_booking_lock`, performing `db.rollback()` and `db.refresh(booking)` before checking the booking status to ensure only one refund is processed. |
+
+
+**B23 — Booking detail readable by any member in the org.** Rule 10 (members may read
+only their own bookings; another member's booking id → 404 BOOKING_NOT_FOUND):
+`app/routers/bookings.py` `get_booking` only filtered by `Room.org_id == user.org_id`
+with NO ownership check, so member B could read member A's booking via
+`GET /bookings/{id}` — even though `cancel_booking` already had the check. Fixed by
+adding, right after the not-found check:
+`if user.role != "admin" and booking.user_id != user.id: raise AppError(404, "BOOKING_NOT_FOUND", ...)`.
+
+**B24 — Creating a room serves a stale usage report.** Rule 12 (report includes every
+room in the org — including zero-booking rooms — and reflects the current state
+immediately): `app/routers/rooms.py` `create_room` committed the room but never
+invalidated the report cache, so an admin who had already fetched `/admin/usage-report`
+kept getting the cached report without the new room. Fixed by adding
+`cache.invalidate_report(admin.org_id)` after commit (mirrors the booking create/cancel
+paths, which already invalidate it).
+
+Our identified bugs and fixes improved:
 
 -   Authentication and token security
 -   Booking validation and scheduling

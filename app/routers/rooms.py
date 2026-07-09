@@ -69,6 +69,9 @@ def create_room(
         raise AppError(409, "ROOM_CONFLICT", "Room already exists in this organization")
 
     db.refresh(room)
+    # A new room (with zero bookings) must appear in the usage report immediately,
+    # so drop any cached report for this org.
+    cache.invalidate_report(admin.org_id)
     return _serialize_room(room)
 
 @router.get("/{room_id}/availability")
