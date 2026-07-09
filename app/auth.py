@@ -47,7 +47,7 @@ def _now_ts() -> int:
 
 def create_access_token(user: User) -> str:
     iat = _now_ts()
-    lifetime = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+    lifetime = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES) # bug fix: changed to 15 * 60 to 15 minutes
     payload = {
         "sub": str(user.id),
         "org": user.org_id,
