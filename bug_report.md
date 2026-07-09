@@ -99,27 +99,24 @@ The primary cause of these issues was **unsynchronized read-modify-write operati
 | **B20** | Double-booking under concurrency | Booking conflict detection and insertion were performed separately without synchronization, allowing concurrent requests to pass the conflict check simultaneously. | Protected the entire **check → commit** sequence using a module-level `_booking_lock`, with `db.rollback()` before validation to ensure the latest committed state is read. |
 | **B21** | Booking quota bypass under concurrency | The quota validation and booking insertion were not atomic, allowing concurrent requests to bypass booking limits. | Used the same `_booking_lock` around the quota check and insertion process, together with `db.rollback()` to validate against the latest committed database state. |
 | **B22** | Double refund on concurrent cancellations | The cancellation status check, refund logging, and booking status update were executed independently, allowing simultaneous cancellation requests to issue multiple refunds. | Wrapped the cancellation logic inside `_booking_lock`, performing `db.rollback()` and `db.refresh(booking)` before checking the booking status to ensure only one refund is processed. |
+| **B23** | Booking details accessible by any member in the organization | `get_booking` only filtered bookings by `Room.org_id == user.org_id` and did not verify ownership, allowing one member to retrieve another member's booking using its ID. | Added an ownership check after the not-found validation: non-admin users can only access bookings where `booking.user_id == user.id`; otherwise, return `404 BOOKING_NOT_FOUND`. |
+| **B24** | Stale usage report after room creation | After creating a room, the room was committed to the database but the usage report cache was not invalidated, causing cached reports to omit newly created rooms. | Added `cache.invalidate_report(admin.org_id)` immediately after the room creation commit so the usage report reflects the latest state, including newly created rooms. |
 
+## (Authentication / Registration) Bugs
 
-**B23 — Booking detail readable by any member in the org.** Rule 10 (members may read
-only their own bookings; another member's booking id → 404 BOOKING_NOT_FOUND):
-`app/routers/bookings.py` `get_booking` only filtered by `Room.org_id == user.org_id`
-with NO ownership check, so member B could read member A's booking via
-`GET /bookings/{id}` — even though `cancel_booking` already had the check. Fixed by
-adding, right after the not-found check:
-`if user.role != "admin" and booking.user_id != user.id: raise AppError(404, "BOOKING_NOT_FOUND", ...)`.
+| ID | Issue | Cause | Resolution |
+|----|-------|-------|------------|
+| **B25** | `POST /bookings` with a malformed datetime returned HTTP 500 | `parse_input_datetime` called `datetime.fromisoformat` on the raw `start_time`/`end_time` strings; an unparseable value raised an uncaught `ValueError`, producing a 500 instead of a client error. | Wrapped the two `parse_input_datetime` calls in `try/except (ValueError, TypeError)` and raised `400 INVALID_BOOKING_WINDOW`. |
+| **B26** | Concurrent registration of a **new** org returned HTTP 500 | `register` did read-org → (None) → `INSERT org` non-atomically. When several requests registered the same brand-new `org_name` at once, all saw `org is None`, all inserted, and every loser hit the unique-name constraint → uncaught `IntegrityError` → 500. | Caught `IntegrityError` on the org insert: `rollback`, re-query the now-existing org, and continue as a **member**. Exactly one racer becomes admin, the rest join as members (Rule 15). |
+| **B27** | Concurrent registration of the same **username** returned HTTP 500 instead of 409 | The `existing` username check and the user `INSERT` were not atomic, so two concurrent identical registrations both passed the check, then the loser violated `uq_user_org_username` → uncaught `IntegrityError` → 500. | Caught `IntegrityError` on the user insert: `rollback` and raise `409 USERNAME_TAKEN` (Rule 15). |
+| **B4b** | Refresh single-use not atomic under concurrency | `is_refresh_token_used` (check) and `mark_refresh_token_used` (mark) were separate calls with a DB query between them, so two concurrent uses of the same refresh token could both rotate. | Replaced with `consume_refresh_token()` — an atomic check-and-mark guarded by a `threading.Lock()`; the first caller wins, all concurrent reuses get 401 (Rule 8). |
 
-**B24 — Creating a room serves a stale usage report.** Rule 12 (report includes every
-room in the org — including zero-booking rooms — and reflects the current state
-immediately): `app/routers/rooms.py` `create_room` committed the room but never
-invalidated the report cache, so an admin who had already fetched `/admin/usage-report`
-kept getting the cached report without the new room. Fixed by adding
-`cache.invalidate_report(admin.org_id)` after commit (mirrors the booking create/cancel
-paths, which already invalidate it).
+All four were verified with real parallel-thread tests: malformed datetime → 400; 10 concurrent new-org registrations → exactly 1 admin + 9 members, zero 500s; 10 concurrent duplicate-username registrations → 1×201 + 9×409, zero 500s; 12 concurrent refreshes of one token → exactly 1 success.
 
 Our identified bugs and fixes improved:
 
 -   Authentication and token security
+-   Registration robustness under concurrency
 -   Booking validation and scheduling
 -   Sorting and pagination
 -   Refund calculation accuracy
